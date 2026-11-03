@@ -27,6 +27,14 @@ public final class MapNameParser {
     // Letter coordinates first: A1_Winter, B3.sun, A1 Winter (a separator before the name
     // is REQUIRED here - a glued A1Winter stays a plain project name).
     private static final Pattern PATTERN_LEADING_LETTER = Pattern.compile("^\\(?([A-Za-z])[ _]?(\\d{1,2})\\)?[_\\-\\s,.]+(.+?)$");
+    // Coordinates in the MIDDLE with a trailing suffix (author credits etc):
+    // "Hydra 0.0 by SteamGamer3001", "Cat 3.7 by Bob.42". Tried after every end-anchored
+    // form so existing parses are untouched.
+    private static final Pattern PATTERN_GRID_SUFFIX = Pattern.compile("^(.+?)[_\\-\\s,.\\[\\(]+(\\d+)[_\\-\\s,.xX]+(\\d+)[_\\]\\)]*[_\\-\\s,.]+(.+)$");
+    // Same for letter coordinates: "Cat A1 by Bob". The suffix must start with a letter and
+    // be separated by space/underscore/hyphen only, so version strings ("Art v2.1 beta")
+    // stay plain names.
+    private static final Pattern PATTERN_LETTER_SUFFIX = Pattern.compile("^(.+?)[_\\-\\s,.]+([A-Za-z])[ _]?(\\d{1,2})[_\\]\\)]*[_\\-\\s]+([A-Za-z].*)$");
 
     public record ParsedTile(String projectId, int row, int col, String rawName) {}
 
@@ -73,6 +81,28 @@ public final class MapNameParser {
             int col = Integer.parseInt(letterMatcher.group(3)) - 1;
             if (row >= 0 && row < 26 && col >= 0) {
                 return new ParsedTile(letterMatcher.group(1).trim(), row, col, name);
+            }
+        }
+
+        Matcher suffixMatcher = PATTERN_GRID_SUFFIX.matcher(name);
+        if (suffixMatcher.matches()) {
+            String project = suffixMatcher.group(1).trim();
+            int num1 = Integer.parseInt(suffixMatcher.group(2));
+            int num2 = Integer.parseInt(suffixMatcher.group(3));
+            if (!project.isEmpty()) {
+                int col = xyFirst ? num1 : num2;
+                int row = xyFirst ? num2 : num1;
+                return new ParsedTile(project, row, col, name);
+            }
+        }
+
+        Matcher letterSuffixMatcher = PATTERN_LETTER_SUFFIX.matcher(name);
+        if (letterSuffixMatcher.matches()) {
+            int row = Character.toUpperCase(letterSuffixMatcher.group(2).charAt(0)) - 'A';
+            int col = Integer.parseInt(letterSuffixMatcher.group(3)) - 1;
+            String project = letterSuffixMatcher.group(1).trim();
+            if (row >= 0 && row < 26 && col >= 0 && !project.isEmpty()) {
+                return new ParsedTile(project, row, col, name);
             }
         }
 

@@ -509,6 +509,28 @@ public final class MapArtManager {
         if (cache != null) cache.flushSync();
     }
 
+    // Instant X_Y <-> Y_X: swaps every cached tile's (row, col) and expected dims so the
+    // interpretation change applies to cache-backed projects immediately (not just to
+    // live re-parses). Safe to call repeatedly - flipping twice restores the layout.
+    public void transposeCachedProjects() {
+        if (cache != null) {
+            cache.transposeAllProjects();
+        }
+        for (MapArtSet set : projectSets) {
+            int rows = set.getRows();
+            int cols = set.getCols();
+            set.updateDimensions(cols, rows);
+            int expRows = set.getExpectedRows();
+            int expCols = set.getExpectedCols();
+            if (expRows > 0 || expCols > 0) {
+                set.setExpectedDims(expCols, expRows);
+            }
+        }
+        sessionHiddenProjects.clear();
+        lastStructuralSignature = 0;
+        dataVersion++;
+    }
+
     public int getCachedTileCount(String projectId) {
         if (cache == null || projectId == null) return 0;
         ProjectCache project = cache.getProject(projectId);

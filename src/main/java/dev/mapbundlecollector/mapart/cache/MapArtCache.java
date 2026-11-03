@@ -117,6 +117,52 @@ public final class MapArtCache implements AutoCloseable {
         return rootDir;
     }
 
+    // Swaps every tile's (row, col) in EVERY project - the X_Y <-> Y_X interpretation flip
+    // for already-cached maparts. Color files move along (old file removed after the new
+    // one lands), and expected dims swap too. Involution: flipping twice restores the
+    // original layout. The per-chest mapId index is rebuilt from the moved tiles.
+    public void transposeAllProjects() {
+        for (ProjectCache project : allProjects()) {
+            String projectId = project.getProjectId();
+            int expRows = project.getExpectedRows();
+            int expCols = project.getExpectedCols();
+            for (CachedTileInfo tile : new ArrayList<>(project.getTiles().values())) {
+                if (tile.row == tile.col) continue;
+                byte[] colors = readColors(projectId, tile.row, tile.col);
+                removeTile(projectId, tile.row, tile.col);
+                putTile(projectId, tile.col, tile.row, tile.name, tile.mapId);
+                if (colors != null) {
+                    putColors(projectId, tile.col, tile.row, colors);
+                    deleteColorFile(projectId, tile.row, tile.col);
+                }
+            }
+            if (expRows != 0 || expCols != 0) {
+                setExpectedDims(projectId, expCols, expRows);
+            }
+        }
+        requestSave();
+    }
+
+    // Removes a presence entry and its color file (if any) without touching other tiles.
+    private void removeTile(String projectId, int row, int col) {
+        synchronized (lock) {
+            ProjectCache project = projects.get(projectId);
+            if (project == null) return;
+            project.getTiles().remove(row + "_" + col);
+            markDirtyLocked(projectId);
+        }
+        deleteColorFile(projectId, row, col);
+    }
+
+    private void deleteColorFile(String projectId, int row, int col) {
+        try {
+            java.nio.file.Files.deleteIfExists(
+                cacheDir.resolve(safeProjectId(projectId)).resolve("tiles").resolve(row + "_" + col + ".bin"));
+        } catch (IOException error) {
+            log("Failed deleting stale color file " + projectId + " " + row + "_" + col, error);
+        }
+    }
+
     public ProjectCache getOrCreateProject(String projectId) {
         synchronized (lock) {
             return projectLocked(projectId);

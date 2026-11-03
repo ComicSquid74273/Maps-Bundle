@@ -152,9 +152,16 @@ public final class MapArtViewerModule extends Module {
         } else {
             coordinateFormat.set(CoordinateFormat.X_Y);
         }
+        // The flip must apply to ALREADY-CACHED tiles too, not just live re-parses:
+        // transpose every cached (row, col) so cache-backed projects mirror instantly.
+        MapArtManager manager = MapArtManager.get();
+        manager.transposeCachedProjects();
         if (mc.player != null) {
-            MapArtManager.get().forceUpdate(mc.player);
+            manager.forceUpdate(mc.player);
         }
+        MapArtUi.chat("' + chr(0xA7) + 'a[Map Art]' + chr(0xA7) + 'r Coordinate order swapped ("
+            + (coordinateFormat.get() == CoordinateFormat.X_Y ? "X_Y" : "Y_X")
+            + ") - cached maparts re-arranged.");
     }
 
     public void exportMissing() {
