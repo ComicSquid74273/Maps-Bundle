@@ -61,6 +61,12 @@ public final class MapBundleCollector extends Module {
         .defaultValue(true)
         .build());
 
+    private final Setting<Boolean> pullWholeBundles = sgGeneral.add(new BoolSetting.Builder()
+        .name("pull-whole-bundles")
+        .description("When every map inside a chest bundle matches, take the whole bundle into your inventory in one move instead of extracting maps one by one.")
+        .defaultValue(true)
+        .build());
+
     private final Setting<MatchMode> matchMode = sgGeneral.add(new EnumSetting.Builder<MatchMode>()
         .name("match-mode")
         .description("Whether the normalized map name must equal or contain the target name.")
@@ -108,7 +114,7 @@ public final class MapBundleCollector extends Module {
     private final Set<Integer> rejectedBundles = new HashSet<>();
 
     public MapBundleCollector() {
-        super(MapBundleCollectorAddon.CATEGORY, "map-bundle-collector", "Collects filled maps from opened chests and containers into bundles.");
+        super(MapBundleCollectorAddon.CATEGORY, "map-bundle-collector", "Collects filled maps from opened chests and containers into bundles. Chest bundles whose maps all match are pulled whole.");
     }
 
     @Override
@@ -155,6 +161,8 @@ public final class MapBundleCollector extends Module {
             case SCAN -> scan();
             case FIND_BUNDLE -> findBundle();
             case MOVE_MAP -> moveMap(now);
+            case PULL_BUNDLE -> pullBundle(now);
+            case VERIFY_PULL -> verifyPull(now);
             case VERIFY_LOOSE -> verifyLoose(now);
             case VERIFY_BUNDLE_EXTRACT -> verifyBundleExtract(now);
             case VERIFY_BUNDLE_INSERT -> verifyBundleInsert(now);
@@ -208,7 +216,7 @@ public final class MapBundleCollector extends Module {
                 String raw = ChatFormatting.stripFormatting(stack.getHoverName().getString()).trim();
                 if (matches(raw)) {
                     String proj = extractProjectName(raw);
-                    return new ChestMapTarget(slot.index, false, -1, proj);
+                    return new ChestMapTarget(slot.index, Kind.LOOSE_MAP, -1, proj);
                 }
             }
 
@@ -216,13 +224,22 @@ public final class MapBundleCollector extends Module {
             if (extractFromChestBundles.get() && stack.getItem() instanceof BundleItem && stack.has(DataComponents.BUNDLE_CONTENTS)) {
                 BundleContents contents = stack.get(DataComponents.BUNDLE_CONTENTS);
                 if (contents != null && !contents.isEmpty()) {
+                    // Fast path: names are readable straight from the bundle, so when every map
+                    // inside matches, pull the entire bundle instead of extracting maps one by one.
+                    if (pullWholeBundles.get()) {
+                        String wholeProject = wholeBundleProject(contents);
+                        if (wholeProject != null) {
+                            return new ChestMapTarget(slot.index, Kind.WHOLE_BUNDLE, -1, wholeProject);
+                        }
+                    }
+
                     int idx = 0;
                     for (ItemStack item : contents.itemCopyStream().toList()) {
                         if (item.is(Items.FILLED_MAP)) {
                             String raw = ChatFormatting.stripFormatting(item.getHoverName().getString()).trim();
                             if (matches(raw)) {
                                 String proj = extractProjectName(raw);
-                                return new ChestMapTarget(slot.index, true, idx, proj);
+                                return new ChestMapTarget(slot.index, Kind.BUNDLE_ITEM, idx, proj);
                             }
                         }
                         idx++;
@@ -231,6 +248,27 @@ public final class MapBundleCollector extends Module {
             }
         }
         return null;
+    }
+
+    /**
+     * Returns the shared project name when every item in the chest bundle is a matching
+     * filled map (making the bundle safe to pull whole), or null otherwise.
+     */
+    private String wholeBundleProject(BundleContents contents) {
+        String project = null;
+        for (ItemStack item : contents.itemCopyStream().toList()) {
+            if (!item.is(Items.FILLED_MAP)) return null;
+
+            String raw = ChatFormatting.stripFormatting(item.getHoverName().getString()).trim();
+            if (!matches(raw)) return null;
+
+            if (separateProjects.get()) {
+                String proj = extractProjectName(raw);
+                if (project == null) project = proj;
+                else if (!project.equalsIgnoreCase(proj)) return null;
+            }
+        }
+        return project == null ? "Maps" : project;
     }
 
     public static String extractProjectName(String displayName) {
@@ -267,6 +305,16 @@ public final class MapBundleCollector extends Module {
             return;
         }
 
+        // Whole-bundle pulls only need an empty inventory slot to land in
+        if (currentTarget.kind() == Kind.WHOLE_BUNDLE) {
+            if (findEmptyInventorySlot() < 0) {
+                finish("Inventory full; cannot pull bundle '" + currentTarget.projectName() + "'");
+                return;
+            }
+            state = State.PULL_BUNDLE;
+            return;
+        }
+
         bundleSlot = findBundleForProject(currentTarget.projectName());
         if (bundleSlot < 0) {
             finish("No receptive bundles in inventory for project '" + currentTarget.projectName() + "'");
@@ -275,6 +323,13 @@ public final class MapBundleCollector extends Module {
 
         movePhase = 0;
         state = State.MOVE_MAP;
+    }
+
+    private int findEmptyInventorySlot() {
+        for (Slot slot : activeHandler.slots) {
+            if (slot.container instanceof Inventory && slot.getItem().isEmpty()) return slot.index;
+        }
+        return -1;
     }
 
     private int findBundleForProject(String projectName) {
@@ -348,7 +403,7 @@ public final class MapBundleCollector extends Module {
             return;
         }
 
-        if (!currentTarget.isBundle()) {
+        if (currentTarget.kind() != Kind.BUNDLE_ITEM) {
             // Case 1: Loose map in chest
             if (movePhase == 0) {
                 // Pick up player inventory bundle onto cursor
@@ -389,6 +444,49 @@ public final class MapBundleCollector extends Module {
         }
     }
 
+    private void pullBundle(long now) {
+        if (!contextIsStillOpen()) return;
+
+        if (!activeHandler.getCarried().isEmpty()) {
+            returnCursorItem();
+            if (!activeHandler.getCarried().isEmpty()) {
+                finish("Inventory full; cannot clear cursor item");
+                return;
+            }
+            nextActionAt = now + actionDelay.get();
+            return;
+        }
+
+        if (findEmptyInventorySlot() < 0) {
+            finish("Inventory full; cannot pull bundle '" + currentTarget.projectName() + "'");
+            return;
+        }
+
+        // One quick-move click pulls the entire bundle into the player inventory
+        quickMove(currentTarget.slotId());
+        state = State.VERIFY_PULL;
+        verifyDeadline = now + Math.max(1500, actionDelay.get() * 4);
+        nextActionAt = now + actionDelay.get();
+    }
+
+    private void verifyPull(long now) {
+        ItemStack source = activeHandler.getSlot(currentTarget.slotId()).getItem();
+
+        if (!(source.getItem() instanceof BundleItem)) {
+            // Bundle left the chest slot; it is now in the player inventory
+            state = State.SCAN;
+            nextActionAt = now + actionDelay.get();
+            return;
+        }
+
+        if (now < verifyDeadline) {
+            nextActionAt = now + 40;
+            return;
+        }
+
+        finish("Could not pull bundle from container (inventory full?)");
+    }
+
     private void verifyLoose(long now) {
         ItemStack cursor = activeHandler.getCarried();
 
@@ -422,7 +520,7 @@ public final class MapBundleCollector extends Module {
             BundleContents contents = cursor.getOrDefault(DataComponents.BUNDLE_CONTENTS, BundleContents.EMPTY);
             ChestMapTarget nextSameProj = findNextChestTarget();
 
-            if (nextSameProj != null && !nextSameProj.isBundle()
+            if (nextSameProj != null && nextSameProj.kind() == Kind.LOOSE_MAP
                 && nextSameProj.projectName().equalsIgnoreCase(currentTarget.projectName())
                 && contents.weight().result().orElse(Fraction.ONE).compareTo(Fraction.ONE) < 0 && contents.size() < 64) {
                 // Keep bundle on cursor and grab the next map of this project immediately!
@@ -478,6 +576,10 @@ public final class MapBundleCollector extends Module {
 
     private void click(int slot, int button) {
         mc.gameMode.handleContainerInput(activeHandler.containerId, slot, button, ContainerInput.PICKUP, mc.player);
+    }
+
+    private void quickMove(int slot) {
+        mc.gameMode.handleContainerInput(activeHandler.containerId, slot, 0, ContainerInput.QUICK_MOVE, mc.player);
     }
 
     private void returnCursorItem() {
@@ -541,7 +643,13 @@ public final class MapBundleCollector extends Module {
         rejectedBundles.clear();
     }
 
-    private record ChestMapTarget(int slotId, boolean isBundle, int itemIndex, String projectName) {}
+    private record ChestMapTarget(int slotId, Kind kind, int itemIndex, String projectName) {}
+
+    private enum Kind {
+        LOOSE_MAP,
+        BUNDLE_ITEM,
+        WHOLE_BUNDLE
+    }
 
     public enum MatchMode {
         Exact,
@@ -555,6 +663,8 @@ public final class MapBundleCollector extends Module {
         SCAN,
         FIND_BUNDLE,
         MOVE_MAP,
+        PULL_BUNDLE,
+        VERIFY_PULL,
         VERIFY_LOOSE,
         VERIFY_BUNDLE_EXTRACT,
         VERIFY_BUNDLE_INSERT,

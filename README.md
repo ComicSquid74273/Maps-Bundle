@@ -4,7 +4,7 @@ A client-side [Meteor Client](https://meteorclient.com/) addon for Fabric and Mi
 
 ## Features
 
-- **Bundle collector:** moves matching filled maps from opened containers into inventory bundles.
+- **Bundle collector:** moves matching filled maps from opened containers into inventory bundles. Map names are read straight from bundles inside the chest, and bundles whose maps all match are pulled into your inventory whole (one move per bundle) - loose maps and mixed bundles are still handled one by one.
 - **Chest sorter:** retrieves coordinate-named map tiles in grid order across chests and shulker boxes.
 - **Duplicate extractor:** separates duplicate map tiles into an empty bundle.
 - **Map-art viewer:** stitches bundle contents into an inventory side panel or fullscreen preview.
